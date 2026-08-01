@@ -13,24 +13,38 @@ permissions:
 jobs:
   build-windows:
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     steps:
-      - name: 检出源码
+      - name: 检出构建文件
         uses: actions/checkout@v4
+
+      - name: 还原并校验软件源码
+        shell: pwsh
+        run: |
+          $parts = Get-ChildItem "source_xz_chunks/part*.txt" | Sort-Object Name
+          if ($parts.Count -ne 7) { throw "源码分片数量错误：$($parts.Count)" }
+          $base64 = ($parts | ForEach-Object { Get-Content $_.FullName -Raw }) -join ''
+          [IO.File]::WriteAllBytes("aefst_ultramin.tar.xz", [Convert]::FromBase64String($base64))
+          $actual = (Get-FileHash "aefst_ultramin.tar.xz" -Algorithm SHA256).Hash.ToLower()
+          $expected = "e6c3ea5f036f8618bc89323afddcbd60222b291f951c3ee28dab49a542a16fb9"
+          if ($actual -ne $expected) { throw "源码校验失败：$actual" }
+          tar -xf aefst_ultramin.tar.xz
+          Copy-Item -Recurse -Force "aefst_ultramin/*" "."
+          if (-not (Test-Path "main.py")) { throw "源码还原失败：缺少 main.py" }
 
       - name: 配置 Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           architecture: 'x64'
-          cache: 'pip'
 
       - name: 安装依赖
         shell: pwsh
         run: |
           python -m pip install --upgrade pip wheel setuptools
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install "matplotlib>=3.7,<3.11"
           python -m pip install -r requirements.txt
           python -m pip install pyinstaller
 
@@ -38,7 +52,10 @@ jobs:
         shell: pwsh
         run: |
           $env:MPLBACKEND = 'Agg'
-          python tests/smoke_test.py
+          $env:PYTHONUTF8 = '1'
+          $env:PYTHONIOENCODING = 'utf-8'
+          python main.py --demo-output output/smoke_test.png
+          if (-not (Test-Path "output/smoke_test.png")) { throw "基础测试未生成应变云图" }
 
       - name: 打包 Windows 程序
         shell: pwsh
@@ -50,10 +67,19 @@ jobs:
             --collect-all trimesh `
             --collect-all pandas `
             --collect-all openpyxl `
+            --hidden-import tkinter `
             --add-data "config.json;." `
             --add-data "adapters;adapters" `
             --add-data "sample_data;sample_data" `
+            --add-data "README_CN.md;." `
             main.py
+
+      - name: 验证可执行文件
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist/WingStrainAEFST/WingStrainAEFST.exe")) {
+            throw "未找到 WingStrainAEFST.exe"
+          }
 
       - name: 整理免安装包
         shell: pwsh
@@ -66,6 +92,7 @@ jobs:
           适用系统：Windows 10/11 64 位
           使用方法：解压整个文件夹后，双击 WingStrainAEFST.exe。
           注意：不要只复制 exe，必须保留同目录下的 _internal 文件夹。
+          软件界面为中文，包含在线监测、三维应变云图及迁移学习后台模型更新。
           "@ | Set-Content -Encoding UTF8 release/WingStrainAEFST/请先阅读.txt
 
       - name: 上传 Windows 成品
