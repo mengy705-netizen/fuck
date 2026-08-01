@@ -1,0 +1,78 @@
+name: 构建 Windows 免安装版
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 配置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          architecture: 'x64'
+          cache: 'pip'
+
+      - name: 安装依赖
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip wheel setuptools
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements.txt
+          python -m pip install pyinstaller
+
+      - name: 运行基础测试
+        shell: pwsh
+        run: |
+          $env:MPLBACKEND = 'Agg'
+          python tests/smoke_test.py
+
+      - name: 打包 Windows 程序
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --windowed --name WingStrainAEFST `
+            --collect-all matplotlib `
+            --collect-all scipy `
+            --collect-all torch `
+            --collect-all trimesh `
+            --collect-all pandas `
+            --collect-all openpyxl `
+            --add-data "config.json;." `
+            --add-data "adapters;adapters" `
+            --add-data "sample_data;sample_data" `
+            main.py
+
+      - name: 整理免安装包
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          Copy-Item -Recurse -Force dist/WingStrainAEFST release/WingStrainAEFST
+          Copy-Item README_CN.md release/WingStrainAEFST/使用说明.txt
+          @"
+          机翼应变监测与 AE-FST 迁移学习软件
+          适用系统：Windows 10/11 64 位
+          使用方法：解压整个文件夹后，双击 WingStrainAEFST.exe。
+          注意：不要只复制 exe，必须保留同目录下的 _internal 文件夹。
+          "@ | Set-Content -Encoding UTF8 release/WingStrainAEFST/请先阅读.txt
+
+      - name: 上传 Windows 成品
+        uses: actions/upload-artifact@v4
+        with:
+          name: WingStrainAEFST-Windows-x64
+          path: release/WingStrainAEFST
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 30
